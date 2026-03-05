@@ -1,20 +1,48 @@
-## Aliucord Plugin Template
-### Getting Started
-1. Open the [build.gradle.kts](https://github.com/RazerTexz/aliucord-plugin-template/blob/main/plugins/build.gradle.kts) inside the `plugins` folder and replace all the placeholders.
-2. Modify your plugin metadata by opening the [build.gradle.kts](https://github.com/RazerTexz/aliucord-plugin-template/blob/main/plugins/ExamplePlugin/build.gradle.kts) inside the `ExamplePlugin` folder.
-3. Build your plugin using:
-    - **Windows**: `.\gradlew.bat :plugins:ExamplePlugin:make`
-    - **Linux and MacOS**: `./gradlew :plugins:ExamplePlugin:make`
+# Aliucord Plugins
 
-### GitHub Actions Setup
-To significantly speed up your builds on GitHub Actions, you need to add a secret key:
-1. Go to your repository **Settings**.
-2. Navigate to **Secrets and variables** > **Actions**.
-3. Click on **New repository secret**.
-4. Set the **Name** to `GRADLE_ENCRYPTION_KEY`.
-5. Set the **Secret** to any random string (e.g., a generated password or UUID).
-6. Click on **Add secret**.
-7. Done!
+A repository of custom plugins for [Aliucord](https://github.com/Aliucord)
 
-## Plugin Documentation
-Read [this](https://github.com/Aliucord/documentation/tree/main/plugin-dev).
+## Available Plugins
+
+### FavEmojiFirst
+
+Sorts your favorited emojis to the top of the autocomplete picker when typing `:`.
+
+**Current Version:** 1.0.0
+
+**Features:**
+
+* Favorited emojis appear at the top of autocomplete results after typing the first character following `:`.
+* Works with native Aliucord favorites out of the box.
+* Optionally integrates with [Frecents](https://github.com/zt64/aliucord-plugins) to sync and use your desktop Discord favorites on mobile.
+
+## Installation
+
+1. **[Download FavEmojiFirst.zip](https://github.com/erwinskyy/aliucord-plugins/raw/builds/FavEmojiFirst.zip)** directly from the builds branch.
+2. On your Android device, open your file manager and navigate to your internal storage.
+3. Locate the `Aliucord/plugins` directory.
+4. Move the downloaded `FavEmojiFirst.zip` file directly into the `plugins` folder. **(Do not extract the .zip file).**
+5. Restart the Discord application (if you had it opened in the background).
+6. Navigate to **Settings** > **Plugins** in Discord to confirm FavEmojiFirst is enabled.
+
+> **Note:** If you use [Frecents](https://github.com/zt64/aliucord-plugins), install it alongside this plugin and your desktop-synced favorites will automatically be used instead of Aliucord's native ones.
+
+## Building from Source
+
+To compile this plugin locally, ensure you have JDK 21 and a standard Gradle environment configured.
+
+```
+git clone https://github.com/erwinskyy/aliucord-plugins.git
+cd aliucord-plugins
+./gradlew :FavEmojiFirst:make
+```
+
+The compiled plugin will be generated as a `.zip` file located in the `plugins/FavEmojiFirst/build/outputs/` directory.
+
+## Credits
+
+FavEmojiFirst is inspired by the [favEmojiFirst](https://github.com/Vendicated/Vencord/tree/main/src/plugins/favEmojiFirst) plugin from [Vencord](https://github.com/Vendicated/Vencord) by Vendicated.
+
+## License
+
+All plugins are licensed under the [Open Software License 3.0](LICENSE)
