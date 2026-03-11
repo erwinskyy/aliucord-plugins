@@ -1,5 +1,5 @@
 version = "1.0.0"
-description = "Puts your favourite emojis first in the emoji autocomplete"
+description = "Jump to the first message in any channel or DM via long-pressing the title or with /firstmessage"
 
 aliucord {
     changelog = """
