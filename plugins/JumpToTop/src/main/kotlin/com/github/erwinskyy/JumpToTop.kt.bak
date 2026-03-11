@@ -1,0 +1,201 @@
+package com.github.erwinskyy
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
+import android.view.ViewTreeObserver
+import android.widget.Toast
+import androidx.recyclerview.widget.RecyclerView
+import com.aliucord.Http
+import com.aliucord.annotations.AliucordPlugin
+import com.aliucord.api.CommandsAPI.CommandResult
+import com.aliucord.entities.Plugin
+import com.aliucord.patcher.after
+import com.aliucord.wrappers.ChannelWrapper
+import com.discord.app.AppFragment
+import com.discord.stores.StoreStream
+import com.discord.widgets.chat.list.WidgetChatList
+
+@AliucordPlugin
+class JumpToTop : Plugin() {
+
+    companion object {
+        // Arbitrary tag used to mark views we've already attached the long-press to,
+        // so we don't double-attach on subsequent layout passes.
+        const val TAG_KEY = 0x7A747470
+
+        // Settings key for the long-press toggle — shared with Settings.kt.
+        const val SETTING_LONG_PRESS = "longPressEnabled"
+
+        // User-facing string shown by both the toast (long-press) and slash command response.
+        const val JUMP_MESSAGE = "Jumping to first message\u2026"
+    }
+
+    // Holds everything needed to build a search URL and deep link for a given channel.
+    // Both the slash command and long-press resolve to a ChannelInfo before doing anything
+    // else, ensuring they use identical logic regardless of how the channel was obtained.
+    private class ChannelInfo private constructor(
+        private val channelId: Long,
+        private val isDm: Boolean,
+        private val guildId: Long?,
+    ) {
+        companion object {
+            private const val SEARCH_PARAMS = "min_id=0&include_nsfw=true&sort_by=timestamp&sort_order=asc&offset=0"
+
+            // Creates a ChannelInfo from a ChannelWrapper.
+            // guildId of 0 is Discord's sentinel for "no guild" (i.e. a DM), treated as null.
+            fun from(channel: ChannelWrapper): ChannelInfo? {
+                val channelId = channel.id.takeIf { it != 0L } ?: return null
+                val isDm = channel.isDM()
+                val guildId = channel.guildId.takeIf { !isDm && it != 0L }
+                return ChannelInfo(channelId, isDm, guildId)
+            }
+        }
+
+        // Guild channels use the guild search endpoint; DMs use the channel endpoint.
+        val searchUrl: String =
+            if (isDm || guildId == null)
+                "https://discord.com/api/v9/channels/$channelId/messages/search?$SEARCH_PARAMS"
+            else
+                "https://discord.com/api/v9/guilds/$guildId/messages/search?$SEARCH_PARAMS&channel_id=$channelId"
+
+        // Deep link that Discord handles internally to jump to a specific message.
+        fun deepLink(msgId: String): String =
+            if (isDm || guildId == null)
+                "https://discord.com/channels/@me/$channelId/$msgId"
+            else
+                "https://discord.com/channels/$guildId/$channelId/$msgId"
+    }
+
+    init {
+        settingsTab = SettingsTab(Settings::class.java, SettingsTab.Type.BOTTOM_SHEET).withArgs(settings)
+    }
+
+    override fun start(context: Context) {
+
+        // ── /firstmessage slash command ────────────────────────────────────
+        // ctx.currentChannel is a ChannelWrapper — isDM() and guildId are reliable here.
+        commands.registerCommand("firstmessage", "Jump to the first message in this channel") { ctx ->
+            Thread { doJump(ChannelInfo.from(ctx.currentChannel), context) }.start()
+            // Ephemeral Clyde response — only visible to the user who ran the command
+            CommandResult(JUMP_MESSAGE, null, false)
+        }
+
+        // ── Long-press on channel title bar ────────────────────────────────
+        // Patches AppFragment.onViewCreated and filters to WidgetChatList instances only.
+        // Uses OnGlobalLayoutListener to wait until the toolbar is fully inflated before
+        // trying to find and tag ToolbarTitleLayout.
+        patcher.after<AppFragment>("onViewCreated", View::class.java, Bundle::class.java) {
+            val fragment = this as? WidgetChatList ?: return@after
+            val fragmentView = fragment.view ?: return@after
+
+            val listener = object : ViewTreeObserver.OnGlobalLayoutListener {
+                override fun onGlobalLayout() {
+                    try {
+                        if (attachLongPress(fragmentView)) {
+                            fragmentView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                        }
+                    } catch (e: Throwable) {
+                        //logger.error("JumpToTop: error attaching long-press", e)
+                        fragmentView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    }
+                }
+            }
+            fragmentView.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        }
+    }
+
+    override fun stop(context: Context) {
+        patcher.unpatchAll()
+        commands.unregisterAll()
+    }
+
+    // ── Long-press attachment ──────────────────────────────────────────────
+
+    // Walks up from the fragment's root view to find the toolbar, then locates
+    // ToolbarTitleLayout (the channel name area) and attaches a long-press listener.
+    // Returns true when done so the layout listener can remove itself.
+    private fun attachLongPress(fragmentView: View): Boolean {
+        val titleLayout = findTitleLayout(fragmentView) ?: return false
+
+        // Already attached on a previous layout pass — nothing to do
+        if (titleLayout.getTag(TAG_KEY) != null) return true
+
+        titleLayout.isLongClickable = true
+        titleLayout.setOnLongClickListener {
+            // Read the setting at trigger time so toggling takes effect without a restart
+            if (settings.getBool(SETTING_LONG_PRESS, true)) {
+                val rawChannel = StoreStream.getChannelsSelected().getSelectedChannel()
+                Toast.makeText(fragmentView.context, JUMP_MESSAGE, Toast.LENGTH_SHORT).show()
+                Thread { doJump(rawChannel?.let { ChannelInfo.from(ChannelWrapper(it)) }, fragmentView.context) }.start()
+            }
+            true
+        }
+        titleLayout.setTag(TAG_KEY, true)
+        //logger.info("JumpToTop: long-press attached to ToolbarTitleLayout")
+        return true
+    }
+
+    // ── Shared jump logic ──────────────────────────────────────────────────
+
+    // Used by both triggers. Fetches the first message ID via the search API
+    // and fires a deep-link Intent to navigate Discord to it.
+    // Must be called from a background thread — Http.Request is blocking.
+    private fun doJump(info: ChannelInfo?, context: Context) {
+        try {
+            info ?: return
+            val msgId = fetchFirstMessageId(info.searchUrl) ?: return
+            // FLAG_ACTIVITY_NEW_TASK is required when starting from a non-Activity context
+            // (e.g. the application context used by the slash command).
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.deepLink(msgId))).apply {
+                setPackage(context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (e: Throwable) {
+            //logger.error("JumpToTop: doJump exception", e)
+        }
+    }
+
+    // ── Shared helpers ─────────────────────────────────────────────────────
+
+    // Calls the Discord search API and returns the ID of the first (oldest) message,
+    // or null if the search returned no results or the request failed.
+    @Suppress("UNCHECKED_CAST")
+    private fun fetchFirstMessageId(url: String): String? {
+        val data = Http.Request.newDiscordRequest(url).execute().json(Map::class.java)
+        val messages = (data?.get("messages") as? List<List<Map<String, *>>>)?.flatten() ?: emptyList()
+        return messages.firstOrNull()?.get("id") as? String
+    }
+
+    // ── View tree helpers ──────────────────────────────────────────────────
+
+    // Walks UP the hierarchy from fragmentView one level at a time, and at each
+    // ancestor searches DOWN for ToolbarTitleLayout with a depth cap of 6.
+    // Starting close means DMs find it in 1-2 steps (same ConstraintLayout).
+    // Server channels find it a few steps higher where the toolbar lives.
+    private fun findTitleLayout(fragmentView: View): View? {
+        var current: View = fragmentView
+        repeat(15) {
+            val parent = current.parent as? ViewGroup ?: return null
+            current = parent
+            findViewByClassName(parent, "ToolbarTitleLayout")?.let { return it }
+        }
+        return null
+    }
+
+    // Recursive depth-first search for a view whose simple class name matches `name`.
+    // Caps at depth 6 and skips RecyclerView subtrees to avoid traversing the message list.
+    private fun findViewByClassName(view: View, name: String, depth: Int = 0): View? {
+        if (view.javaClass.simpleName == name) return view
+        if (depth > 6 || view !is ViewGroup) return null
+        for (i in 0 until view.childCount) {
+            val child = view.getChildAt(i)
+            if (child is RecyclerView) continue
+            findViewByClassName(child, name, depth + 1)?.let { return it }
+        }
+        return null
+    }
+}
